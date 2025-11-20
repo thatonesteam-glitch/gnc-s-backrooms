@@ -1,0 +1,1261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Backrooms Escape (First-Person)</title>
+    <style>
+        body {
+            margin: 0;
+            background-color: #000;
+            color: white;
+            font-family: 'Arial', sans-serif;
+            overflow: hidden;
+        }
+        canvas {
+            display: block;
+        }
+        #message {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 1.5em;
+            padding: 10px 20px;
+            border-radius: 5px;
+            background-color: rgba(0, 0, 0, 0.5);
+            text-align: center;
+            display: none; /* Hidden by default */
+            z-index: 10;
+        }
+        #overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.7);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            flex-direction: column;
+            font-size: 2em;
+            cursor: pointer;
+            z-index: 10; /* Make sure it's on top */
+        }
+        #overlay p {
+            font-size: 0.7em;
+            /* Make help text wrap better */
+            max-width: 80%;
+            line-height: 1.4;
+        }
+        /* --- New Restart Button Style --- */
+        #restartButton {
+            display: none; /* Hidden by default */
+            font-size: 0.8em;
+            padding: 10px 20px;
+            margin-top: 20px;
+            background-color: #333;
+            color: white;
+            border: 2px solid #555;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+        #restartButton:hover {
+            background-color: #555;
+        }
+
+        /* --- New Stamina Bar Style --- */
+        #staminaContainer {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            width: 200px;
+            height: 20px;
+            border: 2px solid #fff;
+            background-color: #000;
+            border-radius: 5px;
+            z-index: 10;
+        }
+        #staminaBar {
+            width: 100%;
+            height: 100%;
+            background-color: #00ff00;
+            transition: width 0.2s linear;
+        }
+
+        /* --- NEW Crosshair Style --- */
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 20px;
+            font-family: monospace;
+            opacity: 0.5;
+            pointer-events: none; /* So it doesn't block clicks */
+            z-index: 20;
+            display: none; /* Hide by default */
+        }
+    </style>
+</head>
+<body>
+    <div id="overlay">
+        <div id="overlayTitle">Click to Start</div>
+        <p>Use WASD to Move, Hold Shift to Sprint<br>Move Mouse or Arrow Keys to Look</p>
+        <!-- --- New Restart Button --- -->
+        <button id="restartButton">Restart Game</button>
+    </div>
+    <div id="message">Find the Key! The door is locked.</div>
+    <!-- --- New Stamina Bar --- -->
+    <div id="staminaContainer">
+        <div id="staminaBar"></div>
+    </div>
+    
+    <!-- --- NEW Crosshair --- -->
+    <div id="crosshair">+</div>
+
+    <!-- --- Import Tone.js for Sound --- -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <script type="module">
+        // --- Import JS Modules ---
+        import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.module.min.js';
+
+        // --- Basic Setup ---
+        let scene, camera, renderer, player, entity, key, door, playerLight, raycaster;
+        let leftArm, rightArm; // --- NEW: Variables for player arms ---
+        let furniture = []; // This will now hold the walls
+        let ceilingLights = [];
+        let wallMeshes = []; // --- NEW: For AI raycasting ---
+        let floorTiles = []; // --- NEW: For AI patrolling ---
+        const keys = {};
+        const messageDiv = document.getElementById('message');
+        const overlay = document.getElementById('overlay');
+        const overlayTitle = document.getElementById('overlayTitle');
+        const restartButton = document.getElementById('restartButton');
+        const staminaBarElement = document.getElementById('staminaBar');
+        const crosshair = document.getElementById('crosshair'); // Get the crosshair
+        const clock = new THREE.Clock();
+        const textureLoader = new THREE.TextureLoader();
+
+        // --- Sound Setup ---
+        const sounds = {};
+        let lastHeartbeatTime = 0;
+        let lastStepTime = 0;
+
+        // --- Game State ---
+        let gameState = {
+            playerSpeed: 12.0, // Was 8.0
+            entitySpeed: 10.0, // This will be set by loadLevel (WAS 12.0)
+            turnSpeed: 3.0,
+            sprintMultiplier: 2.0, // --- SPRINT SLOWER (was 10.0) ---
+            stamina: 100, // New Stamina
+            maxStamina: 100, // New Stamina
+            hasKey: false,
+            gameOver: false,
+            gameWon: false,
+            level: 1,
+            gameStarted: false,
+            isJumpscaring: false
+        };
+
+        // --- Bounding Boxes (for collision) ---
+        let playerBox = new THREE.Box3();
+        let entityBox = new THREE.Box3();
+        let keyBox = new THREE.Box3();
+        let doorBox = new THREE.Box3();
+        let wallBoxes = [];
+
+        // --- Movement Vectors ---
+        let playerVelocity = new THREE.Vector3();
+        let moveDirection = new THREE.Vector3();
+        let moveForward = false;
+        let moveBackward = false;
+        let moveLeft = false;
+        let moveRight = false;
+        let isSprinting = false; 
+        let turnLeft = false;
+        let turnRight = false;
+        let lookUp = false;
+        let lookDown = false;
+        
+        // --- Level Map ---
+        const TILE_SIZE = 5;
+        const WALL_HEIGHT = 5;
+        
+        // --- Level Definitions (with larger areas) ---
+        const levelMap1 = [
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1],
+            [1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1],
+            [1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1],
+            [1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1],
+            [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1],
+            [1, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1],
+            [1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        ];
+        const levelMap2 = [
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1],
+            [1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1],
+            [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1],
+            [1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 1, 1],
+            [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1],
+            [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],
+            [1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 1, 1, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        ];
+
+        const levelMap3 = [
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1],
+            [1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1],
+            [1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],
+            [1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 1],
+            [1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1],
+            [1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1],
+            [1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],
+            [1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1],
+            [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        ];
+
+        const levelMap4 = [
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1],
+            [1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1],
+            [1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1],
+            [1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1],
+            [1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1],
+            [1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1],
+            [1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        ];
+
+        const levelMap5 = [
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],
+            [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1],
+            [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1],
+            [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1],
+            [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1],
+            [1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1],
+            [1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1],
+            [1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1],
+            [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        ];
+
+        const levelMap6 = [
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1],
+            [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1],
+            [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1],
+            [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1],
+            [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1],
+            [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1],
+            [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1],
+            [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        ];
+
+        const levelMap7 = [
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1],
+            [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1],
+            [1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1],
+            [1, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 1],
+            [1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1],
+            [1, 0, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+            [1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+            [1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        ];
+
+        const levelMap8 = [
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1],
+            [1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1],
+            [1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 1],
+            [1, 0, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1],
+            [1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1],
+            [1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1],
+            [1, 0, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        ];
+
+        const levelMap9 = [
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1],
+            [1, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1],
+            [1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1],
+            [1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1],
+            [1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1],
+            [1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1],
+            [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1],
+            [1, 0, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1],
+            [1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        ];
+
+        const levelMap10 = [
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1],
+            [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1],
+            [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 1],
+            [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1],
+            [1, 0, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+            [1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+            [1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        ];
+
+        const levelMap11 = [
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],
+            [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1],
+            [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1],
+            [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1],
+            [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1],
+            [1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1],
+            [1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 1, 0, 1],
+            [1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1],
+            [1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        ];
+
+        const levelMap12 = [
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1],
+            [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1],
+            [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1],
+            [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1],
+            [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1],
+            [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1],
+            [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1],
+            [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        ];
+
+        const levels = [levelMap1, levelMap2, levelMap3, levelMap4, levelMap5, levelMap6, levelMap7, levelMap8, levelMap9, levelMap10, levelMap11, levelMap12]; // Array of all level maps
+        
+        // --- NEW: Helper function to create Backrooms Monster ---
+        function createBackroomsMonster() {
+            const monster = new THREE.Group();
+            // --- NEW: Dark grey, transparent material ---
+            const mat = new THREE.MeshStandardMaterial({ 
+                color: 0x333333, 
+                roughness: 0.9,
+                transparent: true,
+                opacity: 0.4
+            });
+
+            // Torso
+            const torsoGeo = new THREE.BoxGeometry(0.5, 3.5, 0.5);
+            const torso = new THREE.Mesh(torsoGeo, mat);
+            torso.position.y = 1.75; // Stand on the floor
+            monster.add(torso);
+
+            // Head (simple sphere)
+            const headGeo = new THREE.SphereGeometry(0.4, 16, 16);
+            const head = new THREE.Mesh(headGeo, mat);
+            head.position.y = 3.8; // On top of torso
+            monster.add(head);
+
+            // Limbs
+            const limbGeo = new THREE.BoxGeometry(0.15, 2, 0.15);
+            
+            // Left Arm
+            const leftArm = new THREE.Mesh(limbGeo, mat);
+            leftArm.position.set(-0.4, 2.5, 0);
+            leftArm.rotation.z = 0.3; // Angle out
+            monster.add(leftArm);
+
+            // Right Arm
+            const rightArm = new THREE.Mesh(limbGeo, mat);
+            rightArm.position.set(0.4, 2.5, 0);
+            rightArm.rotation.z = -0.3; // Angle out
+            monster.add(rightArm);
+            
+            // Left Leg
+            const leftLeg = new THREE.Mesh(limbGeo, mat);
+            leftLeg.position.set(-0.2, 0.9, 0);
+            monster.add(leftLeg);
+
+            // Right Leg
+            const rightLeg = new THREE.Mesh(limbGeo, mat);
+            rightLeg.position.set(0.2, 0.9, 0);
+            monster.add(rightLeg);
+            
+            // Red light
+            const entityLight = new THREE.PointLight(0xff0000, 2, 3);
+            entityLight.position.y = 3.8; // Put light in head
+            monster.add(entityLight);
+
+            return monster;
+        }
+
+        // --- NEW Helper Function to Create 3D Key ---
+        function createKeyMesh() {
+            const keyGroup = new THREE.Group();
+            const keyMat = new THREE.MeshStandardMaterial({ color: 0xffff00, emissive: 0xaaaa00 });
+
+            // Handle
+            const handleGeo = new THREE.TorusGeometry(0.15, 0.05, 8, 16);
+            const handle = new THREE.Mesh(handleGeo, keyMat);
+            handle.position.y = 0.3;
+            keyGroup.add(handle);
+
+            // Shaft
+            const shaftGeo = new THREE.BoxGeometry(0.05, 0.4, 0.05);
+            const shaft = new THREE.Mesh(shaftGeo, keyMat);
+            shaft.position.y = 0.05;
+            keyGroup.add(shaft);
+
+            // Teeth
+            const tooth1Geo = new THREE.BoxGeometry(0.05, 0.05, 0.1);
+            const tooth1 = new THREE.Mesh(tooth1Geo, keyMat);
+            tooth1.position.set(0, -0.1, 0.05);
+            keyGroup.add(tooth1);
+
+            const tooth2 = new THREE.Mesh(tooth1Geo, keyMat);
+            tooth2.position.set(0, -0.05, 0.05);
+            keyGroup.add(tooth2);
+
+            // Invisible Collider
+            const colliderGeo = new THREE.BoxGeometry(0.5, 0.8, 0.5);
+            const colliderMat = new THREE.MeshBasicMaterial({ visible: false, transparent: true });
+            const collider = new THREE.Mesh(colliderGeo, colliderMat);
+            collider.position.y = 0.15; // Center the collider
+            keyGroup.add(collider);
+            keyGroup.userData.collider = collider; // Store for collision checks
+
+            keyGroup.scale.set(1.5, 1.5, 1.5); // Make it a bit bigger
+            return keyGroup;
+        }
+
+        // --- Initialization Function ---
+        function init() {
+            // Scene
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x000000); // Back to black
+            scene.fog = new THREE.Fog(0x3d3a2a, 2, 25); // --- DARKER: Fog closer (5->2, 40->25) ---
+
+            // Camera
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 1.6, 0);
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+            
+            // --- Lighting (Re-added) ---
+            // --- DARKER: Yellowish ambient light (0.9->0.5) ---
+            const ambientLight = new THREE.HemisphereLight(0xfff8d4, 0xaaaaaa, 0.5);
+            scene.add(ambientLight); 
+
+            // Player's "flashlight" (Removed)
+            scene.add(camera);
+
+            // --- Player "Hitbox" ---
+            const playerGeo = new THREE.BoxGeometry(0.8, 1.8, 0.8);
+            const playerMat = new THREE.MeshBasicMaterial({ visible: false });
+            player = new THREE.Mesh(playerGeo, playerMat);
+            player.add(camera);
+            camera.position.set(0, 0.7, 0);
+            scene.add(player);
+
+            // --- NEW: Add Arms to Camera ---
+            const armMat = new THREE.MeshStandardMaterial({ color: 0x888888 }); // Simple gray
+            const armGeo = new THREE.BoxGeometry(0.2, 0.7, 0.2); // w, h, d
+            
+            leftArm = new THREE.Mesh(armGeo, armMat);
+            leftArm.position.set(-0.8, -0.6, -0.2); // x, y, z relative to camera (WAS -0.7 Z)
+            camera.add(leftArm); // Add to camera
+
+            rightArm = new THREE.Mesh(armGeo, armMat);
+            rightArm.position.set(0.8, -0.6, -0.2); // x, y, z relative to camera (WAS -0.7 Z)
+            camera.add(rightArm); // Add to camera
+            // --- End New Arms ---
+            
+            // --- NEW: Initialize Raycaster for AI ---
+            raycaster = new THREE.Raycaster();
+
+            // --- Sound Initialization ---
+            sounds.footstep = new Tone.NoiseSynth({ noise: { type: 'pink' }, envelope: { attack: 0.005, decay: 0.1, sustain: 0 } }).toDestination();
+            sounds.keyPickup = new Tone.Synth().toDestination(); // --- FIX: Was THREE.Synth ---
+            sounds.jumpscare = new Tone.NoiseSynth({ noise: { type: 'white' }, envelope: { attack: 0.005, decay: 0.5, sustain: 0 } }).toDestination();
+            
+            // --- NEW Scream Sound (Loud, Long, Scary) ---
+            const screamDistortion = new Tone.Distortion(0.7).toDestination();
+            sounds.scream = new Tone.Synth({ 
+                oscillator: { type: "fatsawtooth" }, 
+                envelope: { attack: 0.01, decay: 0.4, sustain: 0.5, release: 0.2 } 
+            }).connect(screamDistortion); // Connect synth -> distortion -> destination
+
+            // --- NEW Humming/Static Sound ---
+            sounds.hum = new Tone.Oscillator("C2", "sawtooth").toDestination();
+            sounds.hum.volume.value = -Infinity; // Start silent
+            sounds.hum.start();
+
+            sounds.footstep.volume.value = -10;
+            sounds.jumpscare.volume.value = -5;
+            sounds.scream.volume.value = 0; // Set scream volume to MAX ("loud")
+
+            // --- Mouse Controls Setup ---
+            overlay.addEventListener('click', () => {
+                document.body.requestPointerLock = document.body.requestPointerLock || document.body.mozRequestPointerLock || document.body.webkitRequestPointerLock;
+                document.body.requestPointerLock();
+                // Start Tone.js on first user interaction
+                Tone.start();
+            });
+
+            restartButton.addEventListener('click', (e) => {
+                e.stopPropagation();
+                restartGame();
+            });
+
+            document.addEventListener('pointerlockchange', () => {
+                if (document.pointerLockElement === document.body) {
+                    overlay.style.display = 'none';
+                    crosshair.style.display = 'block'; // Show crosshair
+                    gameState.gameStarted = true;
+                    if (!gameState.gameOver && !gameState.gameWon) {
+                        showMessage(`Level ${gameState.level} - Find the Key!`);
+                    }
+                    document.addEventListener('mousemove', onMouseMove, false);
+                } else {
+                    overlay.style.display = 'flex';
+                    crosshair.style.display = 'none'; // Hide crosshair
+                    gameState.gameStarted = false;
+                    if (!gameState.gameOver && !gameState.gameWon) {
+                        overlayTitle.textContent = 'Game Paused - Click to Resume';
+                        restartButton.style.display = 'none';
+                    }
+                    document.removeEventListener('mousemove', onMouseMove, false);
+                }
+            }, false);
+
+            loadLevel(gameState.level);
+
+            document.addEventListener('keydown', onKeyDown);
+            document.addEventListener('keyup', onKeyUp);
+            window.addEventListener('resize', onWindowResize);
+
+            animate();
+        }
+        
+        // --- MODIFIED: Pass map directly ---
+        function getWorldPos(mapX, mapZ, map) {
+            // const map = levels[gameState.level - 1]; // No longer get from global state
+            const worldX = (mapX - Math.floor(map[0].length / 2)) * TILE_SIZE;
+            const worldZ = (mapZ - Math.floor(map.length / 2)) * TILE_SIZE;
+            return new THREE.Vector3(worldX, 0, worldZ);
+        }
+
+        function clearLevel() {
+            for (const mesh of furniture) {
+                scene.remove(mesh);
+            }
+            furniture = [];
+            wallBoxes = [];
+            wallMeshes = []; // --- NEW: Clear wall meshes ---
+            floorTiles = []; // --- NEW: Clear floor tiles ---
+
+
+            for (const light of ceilingLights) {
+                scene.remove(light);
+            }
+            ceilingLights = [];
+
+            if (key) scene.remove(key);
+            if (door) scene.remove(door);
+            if (entity) scene.remove(entity);
+        }
+
+        // --- NEW GLOBAL variable for the door panel ---
+        let doorPanel;
+
+        function loadLevel(levelNum) {
+            clearLevel();
+            doorPanel = null; // Reset door panel
+
+            gameState.level = levelNum;
+            gameState.hasKey = false;
+            
+            // --- UPDATED: Set entity speed to be "a little slower" than the player ---
+            gameState.entitySpeed = 10.0; // Boss speed (was 12.0)
+            
+            if (levelNum > levels.length) {
+                gameBeaten();
+                return;
+            }
+
+            showMessage(`Level ${gameState.level} - Find the Key!`);
+
+            const levelMap = levels[levelNum - 1];
+
+            const floorGeo = new THREE.BoxGeometry(TILE_SIZE, 0.2, TILE_SIZE);
+            const wallGeo = new THREE.BoxGeometry(TILE_SIZE, WALL_HEIGHT, TILE_SIZE);
+            
+            // --- NEW: Dingy Carpet Floor Material ---
+            const floorMat = new THREE.MeshStandardMaterial({ color: 0x9c8c74, roughness: 0.9 });
+            
+            // --- NEW: Backrooms Wall Material (Textureless) ---
+            const wallMat = new THREE.MeshStandardMaterial({ 
+                color: 0xfff0b5, 
+                roughness: 0.8, 
+                metalness: 0.1 
+            });
+            
+            // --- NEW Wooden Ceiling ---
+            const mazeWidth = levelMap[0].length * TILE_SIZE;
+            const mazeHeight = levelMap.length * TILE_SIZE;
+            const ceilingGeo = new THREE.PlaneGeometry(mazeWidth, mazeHeight);
+            
+            // --- NEW: Dark Ceiling Material ---
+            const ceilingMat = new THREE.MeshStandardMaterial({ color: 0x948e79, roughness: 0.9 });
+            
+            const ceiling = new THREE.Mesh(ceilingGeo, ceilingMat);
+            ceiling.position.y = WALL_HEIGHT;
+            ceiling.rotation.x = Math.PI / 2;
+            scene.add(ceiling);
+            furniture.push(ceiling);
+
+            // --- Reset floorTiles array (it's global now) ---
+            floorTiles = []; 
+
+            for (let z = 0; z < levelMap.length; z++) {
+                for (let x = 0; x < levelMap[z].length; x++) {
+                    const pos = getWorldPos(x, z, levelMap); // --- PASS levelMap ---
+                    if (levelMap[z][x] === 0) {
+                        const floor = new THREE.Mesh(floorGeo, floorMat); // Use new wood floor
+                        floor.position.set(pos.x, 0, pos.z);
+                        scene.add(floor);
+                        furniture.push(floor);
+                        floorTiles.push({x, z});
+
+                        // --- NEW: Yellowish flickering lights (DARKER: 0.8->0.4) ---
+                        if (Math.random() < 0.2) {
+                            const light = new THREE.PointLight(0xfff8d4, 0.4, 10, 2);
+                            light.position.set(pos.x, WALL_HEIGHT - 0.5, pos.z);
+                            scene.add(light);
+                            ceilingLights.push(light);
+                        }
+
+                    } else if (levelMap[z][x] === 1) {
+                        const wall = new THREE.Mesh(wallGeo, wallMat);
+                        wall.position.set(pos.x, WALL_HEIGHT / 2, pos.z);
+                        scene.add(wall);
+                        furniture.push(wall);
+                        wallBoxes.push(new THREE.Box3().setFromObject(wall));
+                        wallMeshes.push(wall); // --- NEW: Add to mesh list for AI ---
+                    }
+                }
+            }
+
+            // Place Special Objects
+            const playerTile = floorTiles[0];
+            player.position.copy(getWorldPos(playerTile.x, playerTile.z, levelMap)).setY(1); // --- PASS levelMap ---
+
+            const entityTile = floorTiles[5];
+            const entityStartPos = getWorldPos(entityTile.x, entityTile.z, levelMap); // --- PASS levelMap ---
+            entityStartPos.y = 0; // --- NEW: Set monster on floor ---
+            
+            const keyTile = floorTiles[Math.floor(floorTiles.length / 2)];
+            // const keyPos = getWorldPos(keyTile.x, keyTile.z).setY(1); // Key position is now in buildKeyRoom
+            
+            const doorTile = floorTiles[floorTiles.length - 1];
+            const doorPos = getWorldPos(doorTile.x, doorTile.z, levelMap); // --- PASS levelMap ---
+
+            // --- "Scary Emoji" Entity (REPLACED) ---
+            entity = createBackroomsMonster(); // --- NEW: Create 3D Monster ---
+            entity.scale.set(1.2, 1.2, 1.2);
+            entity.position.copy(entityStartPos);
+            
+            // --- NEW: Init AI state ---
+            entity.userData.isChasing = false;
+            entity.userData.lastKnownPosition = null;
+            entity.userData.patrolTarget = new THREE.Vector3();
+            findNewPatrolTarget(levelMap); // Find initial patrol spot
+
+            scene.add(entity);
+
+            // --- Key (REMOVED from here) ---
+            
+            // --- NEW: Build the key room ---
+            buildKeyRoom(getWorldPos(keyTile.x, keyTile.z, levelMap)); // --- PASS levelMap ---
+
+            // --- Door (Updated to be a 3D model) ---
+            door = new THREE.Group(); // The door is now a group
+            
+            // The frame
+            const frameGeo = new THREE.BoxGeometry(TILE_SIZE * 0.9, WALL_HEIGHT, 0.5);
+            const frameMat = new THREE.MeshStandardMaterial({ color: 0x111111 }); // Dark frame
+            const frameMesh = new THREE.Mesh(frameGeo, frameMat);
+            
+            // The actual panel that changes color
+            const doorPanelGeo = new THREE.BoxGeometry(TILE_SIZE * 0.8, WALL_HEIGHT * 0.95, 0.3);
+            const doorPanelMat = new THREE.MeshStandardMaterial({ color: 0xff0000 }); // Starts red
+            doorPanel = new THREE.Mesh(doorPanelGeo, doorPanelMat); // Assign to global
+            doorPanel.position.z = 0.2; // Sits slightly inside the frame
+
+            // An invisible box for collision
+            const colliderGeo = new THREE.BoxGeometry(TILE_SIZE, WALL_HEIGHT, 0.5);
+            const colliderMat = new THREE.MeshBasicMaterial({ visible: false, transparent: true });
+            const doorCollider = new THREE.Mesh(colliderGeo, colliderMat);
+            
+            // Add all parts to the group
+            door.add(frameMesh);
+            door.add(doorPanel);
+            door.add(doorCollider);
+            // Store collider for collision checks
+            door.userData.collider = doorCollider; 
+            
+            // Position Door Against a Wall
+            if (levelMap[doorTile.z - 1][doorTile.x] === 1) { // Wall to the North
+                door.position.set(doorPos.x, WALL_HEIGHT / 2, doorPos.z - TILE_SIZE / 2 + 0.25);
+                door.rotation.y = 0;
+            } else if (levelMap[doorTile.z + 1][doorTile.x] === 1) { // Wall to the South
+                door.position.set(doorPos.x, WALL_HEIGHT / 2, doorPos.z + TILE_SIZE / 2 - 0.25);
+                door.rotation.y = 0;
+            } else if (levelMap[doorTile.z][doorTile.x - 1] === 1) { // Wall to the West
+                door.position.set(doorPos.x - TILE_SIZE / 2 + 0.25, WALL_HEIGHT / 2, doorPos.z);
+                door.rotation.y = Math.PI / 2;
+            } else if (levelMap[doorTile.z][doorTile.x + 1] === 1) { // Wall to the East
+                door.position.set(doorPos.x + TILE_SIZE / 2 - 0.25, WALL_HEIGHT / 2, doorPos.z);
+                door.rotation.y = Math.PI / 2;
+            } else {
+                // Default fallback (shouldn't happen in a maze)
+                door.position.set(doorPos.x, WALL_HEIGHT / 2, doorPos.z - TILE_SIZE / 2 + 0.25);
+            }
+            scene.add(door);
+        }
+
+        // --- NEW: Helper function for AI patrol ---
+        function findNewPatrolTarget(map) {
+            if (!entity || floorTiles.length === 0) return;
+            const randomTile = floorTiles[Math.floor(Math.random() * floorTiles.length)];
+            const targetPos = getWorldPos(randomTile.x, randomTile.z, map);
+            entity.userData.patrolTarget.copy(targetPos);
+        }
+
+        // --- NEW Function to build the key room ---
+        function buildKeyRoom(position) {
+            // Create a bed
+            const bedMat = new THREE.MeshStandardMaterial({ color: 0x4a2c23 }); // Brown
+            const bedGeo = new THREE.BoxGeometry(1.5, 0.4, 3);
+            const bed = new THREE.Mesh(bedGeo, bedMat);
+            bed.position.copy(position).add(new THREE.Vector3(1, 0.2, 0)); // Place near the position
+            scene.add(bed);
+            furniture.push(bed); // Add for clearing
+
+            // Create a shelf
+            const shelfMat = new THREE.MeshStandardMaterial({ color: 0x3d2817 }); // Dark brown
+            const shelfBackGeo = new THREE.BoxGeometry(0.2, 2.5, 1.5);
+            const shelfBack = new THREE.Mesh(shelfBackGeo, shelfMat);
+            shelfBack.position.copy(position).add(new THREE.Vector3(-1, 1.25, 0));
+            scene.add(shelfBack);
+            furniture.push(shelfBack);
+
+            // Add planks
+            const plankGeo = new THREE.BoxGeometry(0.5, 0.1, 1.5);
+            const plank1 = new THREE.Mesh(plankGeo, shelfMat);
+            plank1.position.copy(shelfBack.position).add(new THREE.Vector3(0.25, 0.5, 0));
+            scene.add(plank1);
+            furniture.push(plank1);
+
+            const plank2 = new THREE.Mesh(plankGeo, shelfMat);
+            plank2.position.copy(shelfBack.position).add(new THREE.Vector3(0.25, 0, 0));
+            scene.add(plank2);
+            furniture.push(plank2);
+
+            const plank3 = new THREE.Mesh(plankGeo, shelfMat);
+            plank3.position.copy(shelfBack.position).add(new THREE.Vector3(0.25, -0.5, 0));
+            scene.add(plank3);
+            furniture.push(plank3);
+
+            // --- Create and place the 3D Key ---
+            key = createKeyMesh();
+            key.position.copy(plank2.position).add(new THREE.Vector3(0.3, 0.1, 0)); // Place on middle plank
+            key.rotation.y = Math.PI / 2;
+            scene.add(key);
+        }
+
+        // --- New Mouse Handler (for Pointer Lock) ---
+        function onMouseMove(e) {
+            if (!gameState.gameStarted) return;
+            const deltaX = e.movementX || e.mozMovementX || e.webkitMovementX || 0;
+            const deltaY = e.movementY || e.mozMovementY || e.webkitMovementY || 0;
+            const factor = 0.002;
+            player.rotation.y -= deltaX * factor;
+            const maxPitch = Math.PI / 2 * 0.9;
+            camera.rotation.x -= deltaY * factor;
+            camera.rotation.x = Math.max(-maxPitch, Math.min(maxPitch, camera.rotation.x));
+        }
+
+        // --- Keyboard Handlers ---
+        function onKeyDown(e) {
+            keys[e.code] = true;
+            switch (e.code) {
+                case 'KeyW': moveForward = true; break;
+                case 'KeyS': moveBackward = true; break;
+                case 'KeyA': moveLeft = true; break;
+                case 'KeyD': moveRight = true; break;
+                case 'ShiftLeft': isSprinting = true; break;
+                case 'ArrowUp': lookUp = true; break;
+                case 'ArrowDown': lookDown = true; break;
+                case 'ArrowLeft': turnLeft = true; break;
+                case 'ArrowRight': turnRight = true; break;
+            }
+        }
+        
+        function onKeyUp(e) {
+            keys[e.code] = false;
+            switch (e.code) {
+                case 'KeyW': moveForward = false; break;
+                case 'KeyS': moveBackward = false; break;
+                case 'KeyA': moveLeft = false; break;
+                case 'KeyD': moveRight = false; break;
+                case 'ShiftLeft': isSprinting = false; break;
+                case 'ArrowUp': lookUp = false; break;
+                case 'ArrowDown': lookDown = false; break;
+                case 'ArrowLeft': turnLeft = false; break;
+                case 'ArrowRight': turnRight = false; break;
+                case 'KeyR':
+                    if (gameState.gameOver || gameState.gameWon) {
+                        restartGame();
+                    }
+                    break;
+            }
+        }
+
+        // --- Game Loop (Animate) ---
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            const elapsedTime = clock.getElapsedTime();
+
+            // --- Jumpscare Animation Loop ---
+            if (gameState.isJumpscaring) {
+                entity.scale.lerp(new THREE.Vector3(10, 10, 10), 0.15); // Scale up 3D model
+                if (entity.children[0]) {
+                    // Find the point light
+                    const light = entity.children.find(c => c.isPointLight);
+                    if (light) light.intensity = 10 + Math.sin(elapsedTime * 100) * 2;
+                }
+                renderer.render(scene, camera);
+                return;
+            }
+
+            if (!gameState.gameStarted) {
+                renderer.render(scene, camera);
+                return;
+            }
+            
+            if (gameState.gameOver || gameState.gameWon) {
+                return;
+            }
+
+            // --- Handle Keyboard Camera Turning ---
+            const maxPitch = Math.PI / 2 * 0.9;
+            if (turnLeft) player.rotation.y += gameState.turnSpeed * delta;
+            if (turnRight) player.rotation.y -= gameState.turnSpeed * delta;
+            if (lookUp) {
+                camera.rotation.x += gameState.turnSpeed * delta;
+                camera.rotation.x = Math.min(maxPitch, camera.rotation.x);
+            }
+            if (lookDown) {
+                camera.rotation.x -= gameState.turnSpeed * delta;
+                camera.rotation.x = Math.max(-maxPitch, camera.rotation.x);
+            }
+
+            // --- Update Logic ---
+            const isMoving = moveForward || moveBackward || moveLeft || moveRight;
+            handleMovement(delta, isMoving);
+            updateEntity(delta, elapsedTime);
+            updateObjects(elapsedTime);
+            checkCollisions();
+            updateArms(elapsedTime, isMoving, isSprinting); // --- NEW: Animate arms ---
+
+            // --- Update Stamina Bar ---
+            staminaBarElement.style.width = (gameState.stamina / gameState.maxStamina) * 100 + '%';
+            
+            // --- Play Footstep Sound ---
+            if (isMoving && !isSprinting && elapsedTime - lastStepTime > 0.4) {
+                sounds.footstep.triggerAttackRelease('8n');
+                lastStepTime = elapsedTime;
+            }
+
+            // --- Render ---
+            renderer.render(scene, camera);
+        }
+
+        // --- NEW: Function to animate arms (More Realistic) ---
+        function updateArms(elapsedTime, isMoving, isSprinting) {
+            const restY = -0.6; // Resting Y position
+            const restZ = -0.2; // Resting Z position (WAS -0.7)
+            const restXLeft = -0.8;
+            const restXRight = 0.8;
+            
+            if (isMoving) {
+                // --- Walking / Sprinting Animation ---
+                const speed = isSprinting ? 18 : 10; // How fast arms swing
+                const swingAmplitudeZ = isSprinting ? 0.3 : 0.2; // How far arms swing (Z-axis)
+                const swingAmplitudeX = isSprinting ? 0.05 : 0.03; // How far arms swing (X-axis)
+                const bobAmplitude = isSprinting ? 0.15 : 0.08; // How much arms bob
+                
+                // Calculate swing and bob
+                const swingZ = Math.sin(elapsedTime * speed) * swingAmplitudeZ;
+                const swingX = Math.cos(elapsedTime * speed) * swingAmplitudeX; // Offset from Z swing
+                const bob = Math.abs(Math.sin(elapsedTime * speed * 0.5)) * bobAmplitude;
+
+                // Apply to arms
+                // Left Arm: Swings forward (negative Z) when right leg is forward
+                leftArm.position.z = restZ + swingZ;
+                leftArm.position.x = restXLeft + swingX;
+                leftArm.position.y = restY - bob;
+                leftArm.rotation.x = swingZ * 0.5; // Add a slight rotation
+
+                // Right Arm: Swings back (positive Z) when left leg is forward
+                rightArm.position.z = restZ - swingZ;
+                rightArm.position.x = restXRight + swingX; // Both arms swing inward/outward together
+                rightArm.position.y = restY - bob;
+                rightArm.rotation.x = -swingZ * 0.5; // Add a slight rotation
+
+            } else {
+                // --- Idle Animation (smoothly return to rest) ---
+                leftArm.position.lerp(new THREE.Vector3(restXLeft, restY, restZ), 0.1);
+                rightArm.position.lerp(new THREE.Vector3(restXRight, restY, restZ), 0.1);
+                leftArm.rotation.x = THREE.MathUtils.lerp(leftArm.rotation.x, 0, 0.1);
+                rightArm.rotation.x = THREE.MathUtils.lerp(rightArm.rotation.x, 0, 0.1);
+            }
+        }
+
+        // --- Handle Player Movement ---
+        function handleMovement(delta, isMoving) {
+            playerVelocity.x -= playerVelocity.x * 10.0 * delta;
+            playerVelocity.z -= playerVelocity.z * 10.0 * delta;
+
+            moveDirection.z = Number(moveBackward) - Number(moveForward);
+            moveDirection.x = Number(moveRight) - Number(moveLeft);
+            moveDirection.normalize();
+
+            // --- Stamina Logic ---
+            let currentSpeed = gameState.playerSpeed;
+            if (isSprinting && isMoving && gameState.stamina > 0) {
+                currentSpeed = gameState.playerSpeed * gameState.sprintMultiplier;
+                gameState.stamina = Math.max(0, gameState.stamina - 1.5); // Drain
+            } else if (gameState.stamina < gameState.maxStamina) {
+                gameState.stamina = Math.min(gameState.maxStamina, gameState.stamina + 0.5); // Regen
+            }
+            // Can't sprint if stamina is 0
+            if (gameState.stamina === 0) {
+                currentSpeed = gameState.playerSpeed;
+            }
+
+            const cameraDirection = new THREE.Vector3();
+            player.getWorldDirection(cameraDirection);
+            cameraDirection.y = 0;
+            cameraDirection.normalize();
+
+            const rightDirection = new THREE.Vector3().crossVectors(camera.up, cameraDirection).normalize();
+            
+            if (moveForward || moveBackward) {
+                playerVelocity.add(cameraDirection.multiplyScalar(moveDirection.z * currentSpeed * 10.0 * delta));
+            }
+            if (moveLeft || moveRight) {
+                playerVelocity.add(rightDirection.multiplyScalar(moveDirection.x * currentSpeed * 10.0 * delta));
+            }
+
+            // Wall Collision & Sliding
+            const oldPos = player.position.clone();
+            
+            player.position.x += playerVelocity.x * delta;
+            playerBox.setFromObject(player);
+            for (const box of wallBoxes) {
+                if (playerBox.intersectsBox(box)) {
+                    player.position.x = oldPos.x;
+                    playerVelocity.x = 0;
+                    break;
+                }
+            }
+
+            player.position.z += playerVelocity.z * delta;
+            playerBox.setFromObject(player);
+            for (const box of wallBoxes) {
+                if (playerBox.intersectsBox(box)) {
+                    player.position.z = oldPos.z;
+                    playerVelocity.z = 0;
+                    break;
+                }
+            }
+        }
+
+        // --- Update Entity AI (with Wall Collision) ---
+        function updateEntity(delta, elapsedTime) {
+            const playerPos = player.position;
+            const entityPos = entity.position;
+
+            // --- NEW: Smart AI Logic ---
+            const directionToPlayer = new THREE.Vector3().subVectors(playerPos, entityPos).normalize();
+            raycaster.set(entityPos, directionToPlayer);
+            const intersects = raycaster.intersectObjects(wallMeshes);
+            
+            let playerVisible = false;
+            if (intersects.length === 0 || intersects[0].distance > entityPos.distanceTo(playerPos) - 1.0) {
+                playerVisible = true;
+            }
+
+            let targetPosition = new THREE.Vector3();
+
+            if (playerVisible) {
+                // Player is visible: CHASE
+                entity.userData.isChasing = true;
+                entity.userData.lastKnownPosition = playerPos.clone();
+                targetPosition.copy(playerPos);
+            } else {
+                // Player is hidden
+                if (entity.userData.isChasing) {
+                    // Was chasing, move to last known position
+                    targetPosition.copy(entity.userData.lastKnownPosition);
+                    if (entityPos.distanceTo(targetPosition) < 2) {
+                        // Arrived at last known spot, player not here.
+                        entity.userData.isChasing = false;
+                        findNewPatrolTarget(levels[gameState.level - 1]);
+                        targetPosition.copy(entity.userData.patrolTarget);
+                    }
+                } else {
+                    // Not chasing: PATROL
+                    targetPosition.copy(entity.userData.patrolTarget);
+                    if (entityPos.distanceTo(targetPosition) < 2) {
+                        // Arrived at patrol spot, find a new one
+                        findNewPatrolTarget(levels[gameState.level - 1]);
+                        targetPosition.copy(entity.userData.patrolTarget);
+                    }
+                }
+            }
+
+            // --- Entity Movement (same as before) ---
+            const moveVector = new THREE.Vector3(
+                targetPosition.x - entityPos.x,
+                0,
+                targetPosition.z - entityPos.z
+            ).normalize();
+
+            const oldPos = entity.position.clone();
+            // --- Use dynamic entity speed ---
+            const moveX = moveVector.x * gameState.entitySpeed * delta;
+            const moveZ = moveVector.z * gameState.entitySpeed * delta;
+
+            // Try moving X
+            entity.position.x += moveX;
+            entityBox.setFromObject(entity); // Update entity box for collision
+            for (const box of wallBoxes) {
+                if (entityBox.intersectsBox(box)) {
+                    entity.position.x = oldPos.x;
+                    break;
+                }
+            }
+
+            // Try moving Z
+            entity.position.z += moveZ;
+            entityBox.setFromObject(entity); // Update entity box for collision
+            for (const box of wallBoxes) {
+                if (entityBox.intersectsBox(box)) {
+                    entity.position.z = oldPos.z;
+                    break;
+                }
+            }
+            // --- End Entity Movement ---
+            
+            // --- Make monster face the direction it's moving ---
+            if (moveX !== 0 || moveZ !== 0) {
+                 entity.rotation.y = Math.atan2(moveX, moveZ);
+            }
+
+            // --- Humming Sound Logic ---
+            const dist = player.position.distanceTo(entity.position);
+            const maxDist = 30; // How far away the hum starts
+            if (dist < maxDist) {
+                // Volume goes from -40dB (quiet) to -10dB (loud)
+                const vol = -40 + (1 - (dist / maxDist)) * 30; 
+                sounds.hum.volume.rampTo(vol, 0.1);
+            } else {
+                // Fade out
+                sounds.hum.volume.rampTo(-Infinity, 0.5);
+            }
+        }
+
+        // --- Update Other Objects ---
+        function updateObjects(elapsedTime) {
+            if (key) {
+                key.rotation.y += 0.05;
+            }
+            
+            // Pulse the entity's "heart"
+            if (entity && entity.children[0]) {
+                const light = entity.children.find(c => c.isPointLight);
+                if (light) {
+                    const pulse = Math.sin(elapsedTime * 5) * 0.5 + 0.5;
+                    light.intensity = pulse * 2 + 1;
+                }
+            }
+
+            // Flicker Ceiling Lights
+            for (const light of ceilingLights) {
+                if (Math.random() > 0.9) {
+                    light.intensity = 0.5 + Math.random() * 0.4; // --- DARKER: (Was 1.0) ---
+                }
+            }
+        }
+
+        // --- Check Collisions ---
+        function checkCollisions() {
+            playerBox.setFromObject(player);
+            // --- Use Box3 for 3D model monster ---
+            entityBox.setFromObject(entity);
+            
+            // --- COLLISION uses the invisible collider now ---
+            if (door && door.userData.collider) {
+                door.userData.collider.updateWorldMatrix(true, false);
+                doorBox.setFromObject(door.userData.collider);
+            }
+            if (key && key.userData.collider) {
+                // --- Use the new key's collider ---
+                key.userData.collider.updateWorldMatrix(true, false);
+                keyBox.setFromObject(key.userData.collider);
+            }
+
+
+            // 1. Player vs Entity
+            if (!gameState.isJumpscaring && playerBox.intersectsBox(entityBox)) {
+                startJumpscare();
+                return;
+            }
+
+            // 2. Player vs Key
+            if (key && playerBox.intersectsBox(keyBox)) {
+                collectKey();
+            }
+
+            // 3. Player vs Door
+            if (door && playerBox.intersectsBox(doorBox)) { // Check intersection
+                if (gameState.hasKey) {
+                    loadLevel(gameState.level + 1);
+                } else {
+                    gameOver("THE LOCKED DOOR KILLED YOU!");
+                }
+            }
+        }
+
+        // --- Game State Functions ---
+        function collectKey() {
+            scene.remove(key);
+            key = null;
+            gameState.hasKey = true;
+            // --- Update the new door panel's material ---
+            if (doorPanel) {
+                doorPanel.material.color.set(0x00ff00);
+                doorPanel.material.emissive.set(0x005500);
+            }
+            showMessage("Key Acquired! Find the GREEN Door!");
+            // Play key pickup sound
+            sounds.keyPickup.triggerAttackRelease('C5', '0.5s');
+        }
+
+        // --- New Jumpscare Function ---
+        function startJumpscare() {
+            gameState.isJumpscaring = true;
+            gameState.gameStarted = false;
+            document.exitPointerLock();
+
+            // --- Play Scream Sound (Loud, Long, Scary) ---
+            sounds.scream.triggerAttack("G5"); // Start the note
+            // Make the pitch fall from G5 down to C4
+            sounds.scream.frequency.rampTo("C4", 0.8); 
+            // Stop the sound after 1 second
+            sounds.scream.triggerRelease("+1.0");
+
+            // Stop the hum
+            sounds.hum.volume.rampTo(-Infinity, 0.1);
+
+            // Play jumpscare sound
+            sounds.jumpscare.triggerAttackRelease('0.5s');
+
+            const forward = new THREE.Vector3();
+            camera.getWorldDirection(forward);
+            const camPos = new THREE.Vector3();
+            camera.getWorldPosition(camPos);
+
+            entity.position.copy(camPos.add(forward.multiplyScalar(0.8)));
+            
+            // Make entity look at camera for jumpscare
+            entity.lookAt(camPos);
+            
+            const light = entity.children.find(c => c.isPointLight);
+            if (light) {
+                light.intensity = 10;
+            }
+
+            setTimeout(() => {
+                gameOver("EATEN BY THE ENTITY!");
+                gameState.isJumpscaring = false;
+            }, 750); // Jumpscare visual duration
+        }
+
+        function gameOver(message) {
+            gameState.gameOver = true;
+            gameState.gameStarted = false;
+            overlayTitle.textContent = "GAME OVER";
+            restartButton.style.display = 'block';
+            showMessage(`${message}`);
+        }
+
+        function gameBeaten() {
+            gameState.gameWon = true;
+            gameState.gameStarted = false;
+            document.exitPointerLock();
+            overlayTitle.textContent = "YOU ESCAPED!";
+            restartButton.style.display = 'block';
+            showMessage(`YOU WIN! (Press R to Restart)`);
+        }
+
+        function restartGame() {
+            window.location.reload();
+        }
+
+        function showMessage(msg) {
+            messageDiv.textContent = msg;
+            messageDiv.style.display = 'block';
+        }
+
+        // --- Handle Window Resize ---
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- Start the game ---
+        init();
+        
+    </script>
+</body>
+</html>
